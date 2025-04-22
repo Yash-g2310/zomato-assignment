@@ -32,28 +32,51 @@ class ZomatoScraper:
         """
         self.headless = headless
         self.use_cache = cache
-        self.cache = self._load_cache() if cache else {}
+        self.cache = self._load_cache() if cache else {"cities": {}, "restaurants": {}}
         self.driver = None
+        
+        # Initialize cache structure if needed
+        if "cities" not in self.cache:
+            self.cache["cities"] = {}
+        if "restaurants" not in self.cache:
+            self.cache["restaurants"] = {}
         
     def _load_cache(self) -> Dict:
         """Load cached restaurant data if available."""
         try:
             if os.path.exists(CACHE_FILE):
+                print(f"Loading cache from {CACHE_FILE}")
                 with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    cache_data = json.load(f)
+                    # Initialize sections if they don't exist
+                    if "cities" not in cache_data:
+                        cache_data["cities"] = {}
+                    if "restaurants" not in cache_data:
+                        cache_data["restaurants"] = {}
+                    return cache_data
         except Exception as e:
             print(f"Cache loading error: {e}")
-        return {}
+        return {"cities": {}, "restaurants": {}}
     
     def _save_cache(self):
         """Save scraped data to cache file."""
         if not self.use_cache:
             return
         try:
+            print(f"Saving cache to {CACHE_FILE}")
             with open(CACHE_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.cache, f, indent=2, ensure_ascii=False)
+            print("Cache saved successfully")
         except Exception as e:
             print(f"Cache saving error: {e}")
+    
+    def _extract_city_name(self, city_url: str) -> str:
+        """Extract city name from URL for better caching."""
+        # Extract city name from url like "https://www.zomato.com/roorkee"
+        city_name = city_url.rstrip('/').split('/')[-1]
+        if not city_name:
+            city_name = "unknown"
+        return city_name
     
     def _initialize_driver(self):
         """Set up and return a Chrome WebDriver instance."""
@@ -88,11 +111,15 @@ class ZomatoScraper:
         """
         print(f"Collecting restaurant URLs from {city_url}...")
         
+        # Extract city name for more robust caching
+        city_name = self._extract_city_name(city_url)
+        print(f"Determined city name: {city_name}")
+        
         # Check if URLs are cached
-        cache_key = f"urls_{city_url.split('/')[-1]}"
-        if self.use_cache and cache_key in self.cache:
-            print(f"Using {len(self.cache[cache_key])} cached URLs")
-            return self.cache[cache_key]
+        if self.use_cache and city_name in self.cache["cities"]:
+            cached_urls = self.cache["cities"][city_name]
+            print(f"Using {len(cached_urls)} cached URLs for {city_name}")
+            return cached_urls
         
         self.driver = self._initialize_driver()
         restaurant_urls = []
@@ -124,19 +151,20 @@ class ZomatoScraper:
                 try:
                     href = a.get_attribute("href")
                     if href and href.endswith("/order"):
-                        # Verify it's a restaurant URL (pattern: domain/city/restaurant-name/order)
-                        if re.match(r"https?://www\.zomato\.com/[^/]+/[^/]+/order$", href):
-                            restaurant_urls.append(href)
+                        restaurant_urls.append(href)
+                    elif href and href.endswith("/info"):
+                        restaurant_urls.append(href.replace("/info", "/order"))
                 except Exception:
                     continue
             
             restaurant_urls = list(set(restaurant_urls))  # Remove duplicates
             print(f"\nFound {len(restaurant_urls)} restaurant URLs")
             
-            # Cache URLs
+            # Cache URLs by city name
             if self.use_cache:
-                self.cache[cache_key] = restaurant_urls
+                self.cache["cities"][city_name] = restaurant_urls
                 self._save_cache()
+                print(f"Cached {len(restaurant_urls)} URLs for {city_name}")
             
             return restaurant_urls
             
@@ -155,11 +183,22 @@ class ZomatoScraper:
         Returns:
             Dictionary containing restaurant details
         """
-        # Check cache first
-        if self.use_cache and url in self.cache:
-            return self.cache[url]
+        # Generate a cache key that includes the URL
+        cache_key = url
         
-        restaurant_data = {"url": url, "scraped_at": datetime.now().isoformat()}
+        # Check cache first
+        if self.use_cache and cache_key in self.cache["restaurants"]:
+            print(f"Using cached data for {url}")
+            return self.cache["restaurants"][cache_key]
+        
+        # Extract city name from URL for data organization
+        city_name = self._extract_city_from_url(url)
+        
+        restaurant_data = {
+            "url": url, 
+            "scraped_at": datetime.now().isoformat(),
+            "city": city_name
+        }
         retry_count = 0
         
         while retry_count < RETRY_COUNT:
@@ -274,13 +313,21 @@ class ZomatoScraper:
                 if retry_count < RETRY_COUNT:
                     time.sleep(2 ** retry_count)
         
-        # Cache the result
+        # Cache the result with structured key
         if self.use_cache:
-            self.cache[url] = restaurant_data
+            self.cache["restaurants"][cache_key] = restaurant_data
             # Save after each restaurant to prevent data loss
             self._save_cache()
             
         return restaurant_data
+    
+    def _extract_city_from_url(self, url: str) -> str:
+        """Extract city name from restaurant URL."""
+        # Extract city from URLs like https://www.zomato.com/roorkee/restaurant-name/order
+        match = re.search(r'zomato\.com/([^/]+)', url)
+        if match:
+            return match.group(1)
+        return "unknown"
     
     def _safe_extract(self, driver, selectors) -> str:
         """Try multiple selectors and return the first successful result."""
@@ -400,7 +447,7 @@ class ZomatoScraper:
                     item_elements = driver.find_elements(By.XPATH,
                         "//div[contains(., '₹') and .//h4]")
                 
-                for item_elem in item_elements[:50]:  # Limit to first 50 items
+                for item_elem in item_elements: 
                     item = self._extract_item_details(item_elem)
                     if item and item.get("name"):
                         items.append(item)
@@ -427,9 +474,9 @@ class ZomatoScraper:
         # If that fails, try a more general approach
         if not item_elements:
             item_elements = container.find_elements(By.XPATH, 
-                ".//div[.//h4][position() < 50]")  # Limit to avoid false positives
+                ".//div[.//h4]")  # Limit to avoid false positives
         
-        for item_elem in item_elements[:50]:
+        for item_elem in item_elements:
             item = self._extract_item_details(item_elem)
             if item and item.get("name"):
                 items.append(item)
@@ -508,7 +555,7 @@ class ZomatoScraper:
             item_elements = container.find_elements(By.CSS_SELECTOR, 
                 "[class*='dish'], [class*='menu-item'], [class*='food-item']")
         
-        for item_elem in item_elements[:50]:  # Limit to first 50 items
+        for item_elem in item_elements: 
             try:
                 item = {}
                 
@@ -577,13 +624,15 @@ class ZomatoScraper:
         Returns:
             List of dictionaries containing restaurant data
         """
+        city_name = self._extract_city_name(city_url)
         restaurant_urls = self.get_restaurant_urls(city_url)
         
         if not restaurant_urls:
             print("No restaurant URLs found.")
             return []
         
-        print(f"Scraping {len(restaurant_urls)} restaurants...")
+        print(f"Scraping {len(restaurant_urls)} restaurants in {city_name}...")
+        start_time = datetime.now()
         results = []
         
         # Use ThreadPoolExecutor for parallel scraping
@@ -591,31 +640,50 @@ class ZomatoScraper:
             future_to_url = {executor.submit(self.scrape_restaurant, url): url for url in restaurant_urls}
             
             completed = 0
+            successful = 0
+            failed = 0
+            
             for future in future_to_url:
                 url = future_to_url[future]
                 try:
                     data = future.result()
                     results.append(data)
+                    successful += 1
                 except Exception as exc:
-                    print(f"{url} generated an exception: {exc}")
+                    print(f"\n{url} generated an exception: {exc}")
+                    failed += 1
                 
                 completed += 1
-                print(f"Progress: {completed}/{len(restaurant_urls)} restaurants scraped", end='\r')
+                
+                # More informative progress report
+                percent = (completed / len(restaurant_urls)) * 100
+                elapsed = (datetime.now() - start_time).total_seconds()
+                
+                # Print progress every time or at certain intervals (e.g., every 5 restaurants)
+                if completed == 1 or completed % 5 == 0 or completed == len(restaurant_urls):
+                    print(f"Progress: {completed}/{len(restaurant_urls)} restaurants scraped ({percent:.1f}%) - Success: {successful}, Failed: {failed} - Elapsed: {elapsed:.1f}s", end='\r')
         
+        # Print a newline after progress reporting to prevent overwriting
         print("\nScraping completed!")
+        
+        # Calculate and display statistics
+        total_time = (datetime.now() - start_time).total_seconds()
+        print(f"Summary: {successful} successful, {failed} failed in {total_time:.1f} seconds")
+        
+        # Save city-specific results to a separate file
+        output_file = f"zomato_{city_name}_{datetime.now().strftime('%Y%m%d')}.json"
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        
+        print(f"Saved data for {len(results)} restaurants to {output_file}")
         return results
 
 if __name__ == "__main__":
     # Example usage
     scraper = ZomatoScraper(headless=True, cache=True)
     
-    # Get restaurant data from Roorkee
-    city_url = "https://www.zomato.com/roorkee"
+    # Specify city URL
+    city_url = "https://www.zomato.com/ncr"  # Change to your desired city
     restaurants = scraper.scrape_all_restaurants(city_url)
     
-    # Save to JSON
-    output_file = f"zomato_{city_url.split('/')[-1]}_{datetime.now().strftime('%Y%m%d')}.json"
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(restaurants, f, indent=2, ensure_ascii=False)
-    
-    print(f"Saved data for {len(restaurants)} restaurants to {output_file}")
+    print(f"Completed scraping {len(restaurants)} restaurants from {city_url}")
