@@ -8,19 +8,27 @@ enabling natural language queries about restaurants and their menus.
 import os
 import logging
 import json
-from typing import Dict, List, Union, Any
+import glob
+import time
+import re
 
+from typing import Dict, List, Union, Any
 from .embeddings import create_embedding_model
 from .document_store import RestaurantDocumentStore
+from .reranker import QueryDocumentReranker
 from .query_engine import RestaurantQueryEngine
+from .llm import create_llm
+from config import get_latest_data_file
+from datetime import datetime
+from config import get_latest_data_file
+from knowledge_base import RestaurantKnowledgeBase, KnowledgeBaseManager
+from knowledge_base import main as kb_main
 
 logger = logging.getLogger(__name__)
 
 def find_latest_json_file():
     """Find the latest restaurant JSON file in the current directory or parent."""
-    from config import get_latest_data_file
-    import json
-    import os
+    
     
     # First try to find combined data files
     latest = get_latest_data_file(prefix="restaurants_")
@@ -58,7 +66,7 @@ def find_latest_json_file():
     logger.warning("No restaurant data files found! Creating a test file...")
     
     # Create a simple test restaurant file
-    from datetime import datetime
+    
     test_data = [
         {
             "name": "Test Restaurant",
@@ -95,6 +103,29 @@ def find_latest_json_file():
         
     raise FileNotFoundError("No restaurant JSON files found. Run the scraper first.")
 
+def find_all_restaurant_files():
+    """Find all restaurant data files."""
+    
+    all_files = []
+    
+    # Find all restaurant data files
+    for prefix in ["restaurants_", "zomato_", "swiggy_"]:
+        pattern = os.path.join(os.getcwd(), f"{prefix}*.json")
+        files = glob.glob(pattern)
+        if files:
+            all_files.extend(files)
+    
+    if not all_files:
+        # Fall back to finding one latest file
+        try:
+            latest = find_latest_json_file()
+            all_files = [latest]
+        except FileNotFoundError:
+            raise FileNotFoundError("No restaurant JSON files found. Run the scraper first.")
+    
+    logger.info(f"Found {len(all_files)} restaurant data files")
+    return all_files
+
 class RestaurantRAG:
     """
     Retrieval Augmented Generation system for restaurant queries based on restaurant data.
@@ -112,27 +143,35 @@ class RestaurantRAG:
             use_lightweight: Use lightweight models to save memory
             clear_cache: Force recreation of vector store cache
         """
-        if json_file_path is None:
-            json_file_path = find_latest_json_file()
-            logger.info(f"Using latest restaurant data file: {json_file_path}")
-
+        
         logger.info("Initializing Restaurant RAG system...")
-
+        self.kb_manager = KnowledgeBaseManager()
+        
         # Step 1: Load restaurant knowledge base
         logger.info("Loading restaurant knowledge base...")
-        from knowledge_base import RestaurantKnowledgeBase, KnowledgeBaseManager
+        
         all_patterns = [
             "restaurants_*.json", 
             "zomato_*.json",       
-            "swiggy_*.json"        
+            "swiggy_*.json",
+            "*.json"  # Fallback to ensure all JSON files are checked
         ]
-        kb_manager = KnowledgeBaseManager()
-        kb_manager.update_from_json_files(all_patterns)
-        self.kb = kb_manager.kb
+        
+        if json_file_path:
+            logger.info(f"Using specific restaurant data file: {json_file_path}")
+            self.kb_manager.update_from_json_files([json_file_path])
+        else:
+            logger.info("Loading from all restaurant data files...")
+            self.kb_manager.update_from_json_files(all_patterns)
+            
+        
+        
+        # Access KB from manager
+        self.kb = self.kb_manager.kb
+        
         logger.info(f"Loaded {len(self.kb.restaurants)} restaurants into knowledge base")
 
         # Step 2: Create embeddings model
-        from .embeddings import create_embedding_model
         self.embeddings = create_embedding_model(use_lightweight)
 
         # Step 3: Set up document store
@@ -144,7 +183,7 @@ class RestaurantRAG:
         )
 
         # Step 4: Initialize reranker for better retrieval precision
-        from .reranker import QueryDocumentReranker
+        
         self.reranker = QueryDocumentReranker(use_lightweight)
 
         # Step 5: Initialize LLM (try improved approach first)
@@ -154,7 +193,7 @@ class RestaurantRAG:
             use_lightweight
         )
         try:
-            from .llm import create_llm
+            
             self.llm = create_llm(use_lightweight)
             if not self.llm:
                 self.llm = self.query_engine.llm
@@ -175,16 +214,15 @@ class RestaurantRAG:
         Returns:
             A dictionary with the answer and metadata
         """
-        import time
         start_time = time.time()
-    
+
         # Check cache if enabled
         if use_cache and self.query_cache is not None and user_question in self.query_cache:
             cached_result = self.query_cache[user_question]
             cached_result["source"] = "cache"
             cached_result["processing_time"] = time.time() - start_time
             return cached_result
-        
+
         # Try using query_engine first if it exists and has a query method
         if hasattr(self, 'query_engine') and hasattr(self.query_engine, 'query'):
             try:
@@ -192,15 +230,15 @@ class RestaurantRAG:
                 # Add metadata
                 if "processing_time" not in result:
                     result["processing_time"] = time.time() - start_time
-                
+
                 # Update cache
                 if use_cache and self.query_cache is not None:
                     self.query_cache[user_question] = result
-                    
+
                 return result
             except Exception as e:
                 logger.warning(f"Query engine failed: {e}, falling back to direct query handling")
-                
+
         # Fall back to specialized query handling
         # Create query plan
         query_plan = self._plan_query(user_question)
@@ -266,7 +304,6 @@ class RestaurantRAG:
             r"(?:looking for|want|find|any)\s+([a-zA-Z\s]+)"
         ]
         
-        import re
         for pattern in patterns:
             match = re.search(pattern, query)
             if match:
@@ -474,6 +511,17 @@ class RestaurantRAG:
                     answer = answer[len(query_plan["original_query"]):].strip()
             else:
                 answer = raw_answer.strip()
+                # Remove any system instructions text that might have been included
+                if "IMPORTANT:" in answer:
+                    answer = answer.split("IMPORTANT:")[0].strip()
+
+                # Return the cleaned answer
+                return {
+                    "answer": answer,
+                    "sources": [doc.metadata.get("name", "Unknown") for doc in docs],
+                    "query_type": "general_query"
+                }
+                
         except Exception as e:
             logger.error(f"Error calling LLM: {e}")
             answer = "I apologize, but I'm currently having technical difficulties accessing the restaurant information."
@@ -792,15 +840,14 @@ class RestaurantRAG:
         if not price_str:
             return 0
 
-        import re
         price_match = re.search(r'(\d+)', price_str)
         if price_match:
             return int(price_match.group(1))
         return 0
     
     def search_dishes(self, query: str) -> List[Dict]:
-        """Search for dishes across all restaurants."""
-        # Use the KB's dish finding functionality
+        """Search for dishes across all restaurants using the knowledge base directly."""
+        # Use the KB's dish finding functionality 
         restaurants_with_dishes = self.kb.find_restaurants_with_dish(query)
 
         results = []
@@ -875,7 +922,6 @@ class RestaurantRAG:
     def _extract_comparison_entities(self, query: str) -> list:
         """Extract entities being compared in comparison queries."""
         # This could be enhanced with more sophisticated NLP parsing
-        import re
         
         # Look for common patterns
         patterns = [
@@ -908,7 +954,7 @@ def demo_rag():
         
         # Import and run the knowledge base
         try:
-            from knowledge_base import main as kb_main
+            
             kb_main()
         except Exception as kb_error:
             logger.error(f"Failed to run knowledge base: {kb_error}")

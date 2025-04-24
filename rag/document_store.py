@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import logging
+import re
 from typing import List, Dict, Any, Set, Union
 from langchain.schema import Document
 from langchain_community.vectorstores import FAISS
@@ -26,7 +27,8 @@ class RestaurantDocumentStore:
         """
         self.kb = kb
         self.embeddings = embeddings
-        self.json_file_path = json_file_path
+        
+        cache_key = f"restaurants_{len(kb.restaurants)}"
         
         # Set up vector stores
         cache_dir = "vector_cache"
@@ -47,22 +49,25 @@ class RestaurantDocumentStore:
         
     def _setup_vector_stores(self, json_file_path: str, cache_dir: str):
         """Set up vector stores with caching for restaurants and dishes."""
-        # Generate cache paths
-        json_basename = os.path.basename(json_file_path).split('.')[0]
-        restaurant_cache = os.path.join(cache_dir, f"{json_basename}_restaurants")
-        dish_cache = os.path.join(cache_dir, f"{json_basename}_dishes")
+        # Generate cache paths based on kb size for uniqueness
+        cache_key = f"restaurants_{len(self.kb.restaurants)}"
+        restaurant_cache = os.path.join(cache_dir, f"{cache_key}_restaurants")
+        dish_cache = os.path.join(cache_dir, f"{cache_key}_dishes")
 
-        # Process restaurant data
+        # Process restaurant data directly from KB
+        logger.info(f"Processing {len(self.kb.restaurants)} restaurants for document store...")
+
+        # Create restaurant docs directly from KB
         self.restaurant_docs = []
         for name, restaurant in self.kb.restaurants.items():
             self.restaurant_docs.append(self._create_restaurant_document(name, restaurant))
 
         # Check if we have any restaurants
         if not self.restaurant_docs:
-            logger.error(f"No restaurant data found in {json_file_path}!")
-            raise ValueError("No restaurants were loaded from the data file. Please check your JSON file format.")
+            logger.error(f"No restaurant data found in knowledge base!")
+            raise ValueError("No restaurants were loaded into the knowledge base.")
 
-        # Process dish data
+        # Create dish documents
         self.dish_docs = []
         for restaurant_name, restaurant in self.kb.restaurants.items():
             self.dish_docs.extend(self._create_dish_documents_for_restaurant(restaurant_name, restaurant))
@@ -216,7 +221,6 @@ class RestaurantDocumentStore:
                 price_str = item.get('price', '')
                 price_num = 0
                 if price_str:
-                    import re
                     price_match = re.search(r'(\d+)', price_str)
                     if price_match:
                         price_num = int(price_match.group(1))
@@ -248,7 +252,6 @@ class RestaurantDocumentStore:
         restaurant_name_query = query.lower()
 
         # Extract potential restaurant name tokens (3+ characters)
-        import re
         potential_names = [token for token in re.findall(r'\b\w{3,}\b', restaurant_name_query)]
 
         for name, restaurant in self.kb.restaurants.items():

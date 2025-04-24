@@ -2,6 +2,7 @@ import os
 import json
 import pickle
 import logging
+import glob
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
@@ -54,9 +55,36 @@ class KnowledgeBaseManager:
     def update_from_json_files(self, file_patterns: List[str]) -> int:
         """Update the knowledge base with data from JSON files."""
         prev_count = len(self.kb.restaurants)
+
+        # Add debugging to count total restaurants in files
+        total_in_files = 0
+        restaurant_names = set()
+        duplicate_count = 0
+
+        for pattern in file_patterns:
+            for json_file in glob.glob(pattern):
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    logger.info(f"File {json_file} contains {len(data)} restaurants")
+                    total_in_files += len(data)
+
+                    # Count duplicates
+                    for restaurant in data:
+                        name = restaurant.get("name", "Unknown")
+                        if name in restaurant_names:
+                            duplicate_count += 1
+                        restaurant_names.add(name)
+                except:
+                    logger.error(f"Error analyzing {json_file}")
+
+        logger.info(f"Total restaurants in files: {total_in_files}")
+        logger.info(f"Unique restaurant names: {len(restaurant_names)}")
+        logger.info(f"Duplicate restaurant names: {duplicate_count}")
+
         self.kb.load_from_multiple_files(file_patterns)
         new_count = len(self.kb.restaurants)
-        
+
         logger.info(f"Added {new_count - prev_count} restaurants to knowledge base")
         return new_count - prev_count
     

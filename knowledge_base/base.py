@@ -23,8 +23,18 @@ class RestaurantKnowledgeBase:
     def add_restaurant(self, data: Dict[str, Any]) -> None:
         """Add a restaurant to the knowledge base."""
         restaurant = Restaurant(data)
-        self.restaurants[restaurant.name] = restaurant
-        
+
+        # Create a city-specific key by extracting city from address or using source file
+        city = "unknown"
+        if restaurant.address:
+            address_parts = restaurant.address.split(',')
+            if len(address_parts) >= 2:
+                city = address_parts[-1].strip()
+
+        # Create unique key combining name and city
+        unique_key = f"{restaurant.name} ({city})"
+        self.restaurants[unique_key] = restaurant
+                
         # Index by cuisine
         if restaurant.cuisine and restaurant.cuisine != "Not found":
             cuisines = restaurant.cuisine.lower().split(", ")

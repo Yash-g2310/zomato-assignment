@@ -233,6 +233,58 @@ def process_dish_results(dish_results):
     
     return dish_html
 
+def extract_answer_from_response(result, user_input):
+    """Extract only the answer part from any response format."""
+    # Already in correct format
+    if isinstance(result, dict) and "answer" in result:
+        return result["answer"]
+    
+    # Handle string responses
+    raw_text = str(result)
+    
+    # Most reliable extraction pattern - this should catch most instances
+    if "I don't have that information" in raw_text:
+        restaurants_mentioned = []
+        for line in raw_text.split('\n'):
+            if "Restaurant:" in line:
+                restaurant_name = line.split("Restaurant:")[1].strip()
+                if restaurant_name:
+                    restaurants_mentioned.append(restaurant_name)
+        
+        if restaurants_mentioned:
+            return f"I don't have information about {user_input}. The available restaurants are: {', '.join(restaurants_mentioned[:3])}."
+        return f"I don't have information about {user_input}."
+    
+    # Look for the answer after common pattern markers
+    markers = [
+        "Answer in a helpful, concise way",
+        "User question:",
+        "I don't have that information"
+    ]
+    
+    for marker in markers:
+        if marker in raw_text:
+            parts = raw_text.split(marker)
+            if len(parts) > 1:
+                after_marker = parts[-1].strip()
+                
+                # Look for answer after double newlines
+                if "\n\n" in after_marker:
+                    answer = after_marker.split("\n\n", 1)[1].strip()
+                    if answer and len(answer) > 10:
+                        return answer
+                
+                # Just return everything after the marker if it's substantial
+                if len(after_marker) > 20:
+                    return after_marker
+    
+    # If we get here, try extracting just from the last paragraph
+    paragraphs = raw_text.split('\n\n')
+    if len(paragraphs) > 1 and len(paragraphs[-1].strip()) > 20:
+        return paragraphs[-1].strip()
+    
+    # Last resort - just return a clean message
+    return "I processed your question but couldn't find specific information in my knowledge base."
 # Sidebar
 st.sidebar.title("Restaurant Assistant")
 st.sidebar.image("https://img.icons8.com/cute-clipart/64/000000/restaurant.png")
@@ -291,21 +343,24 @@ if tool_option == "Chat Assistant":
         with st.form(key="chat_form", clear_on_submit=True):
             user_input = st.text_input("Your question:", placeholder="Ask about restaurants or dishes...")
             submit_button = st.form_submit_button("Send")
-            
-            if submit_button and user_input:
-                # Add user message to chat
-                st.session_state.messages.append({"role": "user", "content": user_input})
-                
-                # Process with RAG
-                with st.spinner("Thinking..."):
-                    result = st.session_state.rag.query(user_input)
-                    
-                # Add assistant response to chat
-                response = result["answer"]
-                st.session_state.messages.append({"role": "assistant", "content": response})
-                
-                # Force refresh to show new messages
-                st.rerun()
+        
+        # Process form submission
+        if submit_button and user_input:
+            # Add user message to chat
+            st.session_state.messages.append({"role": "user", "content": user_input})
+
+            # Process with RAG
+            with st.spinner("Thinking..."):
+                result = st.session_state.rag.query(user_input)
+
+            # Use the new extraction function instead of the complex if/elif chain
+            response = extract_answer_from_response(result, user_input)
+
+            # Add assistant response to chat
+            st.session_state.messages.append({"role": "assistant", "content": response})
+
+            # Force refresh to show new messages
+            st.rerun()
 
 elif tool_option == "Restaurant Search" and st.session_state.rag is not None:
     st.header("Restaurant Search")
