@@ -572,30 +572,23 @@ If the information doesn't contain the answer, say "I don't have that informatio
 
 def find_latest_json_file():
     """Find the latest Zomato JSON file in the current directory or parent."""
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # Look in current directory and parent directory
-    json_files = [f for f in os.listdir(current_dir) if f.startswith('zomato_') and f.endswith('.json')]
-    
-    # Check if JSON files exist in parent directory
-    parent_dir = os.path.dirname(current_dir)
-    if not json_files and os.path.exists(parent_dir):
-        parent_json_files = [os.path.join(parent_dir, f) for f in os.listdir(parent_dir) 
-                            if f.startswith('zomato_') and f.endswith('.json')]
-        json_files.extend(parent_json_files)
-    
-    # Try restaurant scrapers directory
-    scrapers_dir = os.path.join(current_dir, 'restaurant scrapers')
-    if not json_files and os.path.exists(scrapers_dir):
-        scrapers_json_files = [os.path.join(scrapers_dir, f) for f in os.listdir(scrapers_dir) 
-                              if f.startswith('zomato_') and f.endswith('.json')]
-        json_files.extend(scrapers_json_files)
+    from config import get_latest_data_file
+     # First try to find combined data files
+    latest = get_latest_data_file(prefix="restaurants_")
+    if latest:
+        return latest
         
-    if not json_files:
-        raise FileNotFoundError("No Zomato JSON files found. Run the scraper first.")
-    
-    # Return the latest file by modification time
-    return max(json_files, key=lambda f: os.path.getmtime(f))
+    # Fall back to Zomato-only files
+    latest = get_latest_data_file(prefix="zomato_")
+    if latest:
+        return latest
+        
+    # Fall back to Swiggy-only files
+    latest = get_latest_data_file(prefix="swiggy_")
+    if latest:
+        return latest
+        
+    raise FileNotFoundError("No restaurant JSON files found. Run the scraper first.")
 
 
 def demo_rag():
