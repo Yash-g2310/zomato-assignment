@@ -56,8 +56,13 @@ class RestaurantDocumentStore:
         self.restaurant_docs = []
         for name, restaurant in self.kb.restaurants.items():
             self.restaurant_docs.append(self._create_restaurant_document(name, restaurant))
+        
+        # Check if we have any restaurants
+        if not self.restaurant_docs:
+            logger.error(f"No restaurant data found in {json_file_path}!")
+            raise ValueError("No restaurants were loaded from the data file. Please check your JSON file format.")
             
-        # Process dish data first to have it available for both scenarios
+        # Process dish data
         self.dish_docs = []
         for restaurant_name, restaurant in self.kb.restaurants.items():
             self.dish_docs.extend(self._create_dish_documents_for_restaurant(restaurant_name, restaurant))

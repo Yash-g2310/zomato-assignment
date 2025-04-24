@@ -11,8 +11,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Import scrapers
-from zomato_scrapper import ZomatoScraper
-from swiggy_scrapper import SwiggyScraper
+from scrapers.zomato_scrapper import ZomatoScraper
+from scrapers.swiggy_scrapper import SwiggyScraper
 
 DEFAULT_CITIES = [
     "roorkee",

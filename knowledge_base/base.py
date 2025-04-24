@@ -3,6 +3,10 @@ import glob
 import os
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 from .restaurant import Restaurant
 
@@ -56,19 +60,46 @@ class RestaurantKnowledgeBase:
             return parts[-2].strip().lower()
         return parts[0].strip().lower() if parts else ""
     
-    def load_from_json(self, json_file: str) -> None:
-        """Load restaurants from a JSON file produced by the scraper."""
+    def load_from_json(self, json_file: str) -> int:
+        """Load restaurant data from a JSON file."""
         try:
             with open(json_file, 'r', encoding='utf-8') as f:
-                restaurants_data = json.load(f)
-                
-            for restaurant_data in restaurants_data:
-                self.add_restaurant(restaurant_data)
-                
-            print(f"Loaded {len(self.restaurants)} restaurants into knowledge base.")
-            
+                data = json.load(f)
+
+            # Validate data format
+            if not isinstance(data, list):
+                raise ValueError(f"Expected a list of restaurants, got {type(data)}")
+
+            if len(data) == 0:
+                logger.warning(f"The file {json_file} contains an empty restaurant list!")
+                return 0
+
+            # Sample check for required fields in the first restaurant
+            if data and isinstance(data[0], dict):
+                required_fields = ['name', 'menu_items']
+                missing = [field for field in required_fields if field not in data[0]]
+                if missing:
+                    logger.error(f"Missing required fields in restaurant data: {missing}")
+                    raise ValueError(f"JSON format invalid - missing fields: {missing}")
+
+            # Process restaurants
+            count = 0
+            for restaurant_data in data:
+                try:
+                    self.add_restaurant(restaurant_data)
+                    count += 1
+                except Exception as e:
+                    logger.error(f"Error adding restaurant {restaurant_data.get('name', 'unknown')}: {str(e)}")
+
+            logger.info(f"Loaded {count} restaurants into knowledge base.")
+            return count
+
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON format in file: {json_file}")
+            raise
         except Exception as e:
-            print(f"Error loading restaurants from {json_file}: {str(e)}")
+            logger.error(f"Error loading data from {json_file}: {str(e)}")
+            raise
     
     def load_from_multiple_files(self, file_patterns: List[str]) -> None:
         """Load data from multiple JSON files matching the patterns."""
