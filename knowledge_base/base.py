@@ -101,16 +101,19 @@ class RestaurantKnowledgeBase:
             logger.error(f"Error loading data from {json_file}: {str(e)}")
             raise
     
-    def load_from_multiple_files(self, file_patterns: List[str]) -> None:
+    def load_from_multiple_files(self, file_patterns: List[str]) -> int:
         """Load data from multiple JSON files matching the patterns."""
         loaded_count = 0
+        total_restaurants = 0
         for pattern in file_patterns:
             for json_file in glob.glob(pattern):
-                print(f"Loading: {json_file}")
-                self.load_from_json(json_file)
+                logger.info(f"Loading: {json_file}")
+                restaurants = self.load_from_json(json_file)
+                total_restaurants += restaurants
                 loaded_count += 1
-        
-        print(f"Loaded data from {loaded_count} files")
+    
+        logger.info(f"Loaded {total_restaurants} restaurants from {loaded_count} files")
+        return total_restaurants
     
     def get_restaurant(self, name: str) -> Optional[Restaurant]:
         """Get a restaurant by name."""

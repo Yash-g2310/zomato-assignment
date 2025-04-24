@@ -51,17 +51,17 @@ class RestaurantDocumentStore:
         json_basename = os.path.basename(json_file_path).split('.')[0]
         restaurant_cache = os.path.join(cache_dir, f"{json_basename}_restaurants")
         dish_cache = os.path.join(cache_dir, f"{json_basename}_dishes")
-        
+
         # Process restaurant data
         self.restaurant_docs = []
         for name, restaurant in self.kb.restaurants.items():
             self.restaurant_docs.append(self._create_restaurant_document(name, restaurant))
-        
+
         # Check if we have any restaurants
         if not self.restaurant_docs:
             logger.error(f"No restaurant data found in {json_file_path}!")
             raise ValueError("No restaurants were loaded from the data file. Please check your JSON file format.")
-            
+
         # Process dish data
         self.dish_docs = []
         for restaurant_name, restaurant in self.kb.restaurants.items():
@@ -157,7 +157,7 @@ class RestaurantDocumentStore:
         )
     
     def _create_dish_documents_for_restaurant(self, restaurant_name: str, restaurant) -> List[Document]:
-        """Create document objects for menu items with deduplication."""
+        """Create document objects for menu items with enhanced attributes."""
         documents = []
         seen_dishes: Set[str] = set()  # Track unique dishes
         
@@ -176,6 +176,31 @@ class RestaurantDocumentStore:
                 
                 seen_dishes.add(dish_id)
                 
+                # Extract dietary indicators from name and description
+                description = item.get('description', '')
+                dish_type = item.get('type', 'unknown')
+                
+                # Analyze dish attributes
+                attributes = []
+                if dish_type == "veg":
+                    attributes.append("vegetarian")
+                    
+                # Check for vegan indicators
+                if "vegan" in name.lower() or "vegan" in description.lower():
+                    attributes.append("vegan")
+                    
+                # Check for gluten-free indicators
+                if "gluten-free" in name.lower() or "gluten free" in name.lower() or \
+                   "gluten-free" in description.lower() or "gluten free" in description.lower():
+                    attributes.append("gluten-free")
+                    
+                # Check for spice level
+                spice_levels = ["mild", "medium", "spicy", "extra spicy", "hot"]
+                for level in spice_levels:
+                    if level in name.lower() or level in description.lower():
+                        attributes.append(f"spice-level:{level}")
+                        break
+                    
                 # Create structured content for each dish
                 content = f"""
                 Dish: {name}
@@ -183,10 +208,20 @@ class RestaurantDocumentStore:
                 Category: {category}
                 Price: {item.get('price', 'Price not available')}
                 Description: {item.get('description', 'No description available')}
-                Type: {item.get('type', 'unknown')}
+                Type: {dish_type}
+                Attributes: {', '.join(attributes) if attributes else 'None specified'}
                 """
                 
-                # Add to documents with metadata
+                # Extract numerical price for sorting/filtering
+                price_str = item.get('price', '')
+                price_num = 0
+                if price_str:
+                    import re
+                    price_match = re.search(r'(\d+)', price_str)
+                    if price_match:
+                        price_num = int(price_match.group(1))
+                
+                # Add to documents with enhanced metadata
                 documents.append(
                     Document(
                         page_content=content,
@@ -195,7 +230,9 @@ class RestaurantDocumentStore:
                             "restaurant": restaurant_name,
                             "category": category,
                             "price": item.get('price', 'Price not available'),
-                            "type": item.get('type', 'unknown'),
+                            "price_numeric": price_num, 
+                            "type": dish_type,
+                            "attributes": attributes,
                             "doc_type": "dish"  # Add document type for filtering
                         }
                     )
@@ -203,14 +240,41 @@ class RestaurantDocumentStore:
         
         return documents
     
-    def get_hybrid_restaurant_documents(self, query: str) -> List[Document]:
-        """Retrieve restaurant documents using hybrid search."""
-        # Get semantic search results
-        semantic_docs = self.restaurant_vectorstore.similarity_search(query, k=5)
-        
-        # Get keyword search results
+    def get_hybrid_restaurant_documents(self, query: str, reranker=None) -> List[Document]:
+        """Retrieve restaurant documents using hybrid search with exact match priority."""
+
+        # Try exact name matching first
+        exact_match_docs = []
+        restaurant_name_query = query.lower()
+
+        # Extract potential restaurant name tokens (3+ characters)
+        import re
+        potential_names = [token for token in re.findall(r'\b\w{3,}\b', restaurant_name_query)]
+
+        for name, restaurant in self.kb.restaurants.items():
+            name_lower = name.lower()
+
+            # Check for exact restaurant name match
+            if name_lower == restaurant_name_query or name_lower in restaurant_name_query:
+                doc = self._create_restaurant_document(name, restaurant)
+                exact_match_docs.append(doc)
+
+            # Check for partial strong matches
+            elif any(token in name_lower for token in potential_names):
+                doc = self._create_restaurant_document(name, restaurant)
+                exact_match_docs.append(doc)
+
+        # If we found exact matches, prioritize those
+        if exact_match_docs:
+            # Still use reranker if available
+            if reranker:
+                return reranker.rerank(query, exact_match_docs, top_k=3)
+            return exact_match_docs[:3]
+
+        # Fall back to standard hybrid search if no exact matches
+        semantic_docs = self.restaurant_vectorstore.similarity_search(query, k=8)
         keyword_docs = self.restaurant_bm25.get_relevant_documents(query)
-        
+
         # Combine results with deduplication
         seen_content = set()
         hybrid_docs = []
@@ -220,25 +284,35 @@ class RestaurantDocumentStore:
             if content_hash not in seen_content:
                 seen_content.add(content_hash)
                 hybrid_docs.append(doc)
-        
-        return hybrid_docs[:5]  # Return top 5 unique documents
+
+        # Apply reranking if available
+        if reranker:
+            return reranker.rerank(query, hybrid_docs, top_k=5)
+
+        # Otherwise just return top 5 unique documents
+        return hybrid_docs[:5]
     
-    def get_hybrid_dish_documents(self, query: str) -> List[Document]:
-        """Retrieve dish documents using hybrid search."""
+    def get_hybrid_dish_documents(self, query: str, reranker=None) -> List[Document]:
+        """Retrieve dish documents using hybrid search with optional reranking."""
         # Get semantic search results
-        semantic_docs = self.dish_vectorstore.similarity_search(query, k=7)
-        
+        semantic_docs = self.dish_vectorstore.similarity_search(query, k=10)
+
         # Get keyword search results
         keyword_docs = self.dish_bm25.get_relevant_documents(query)
-        
+
         # Combine results with deduplication
         seen_content = set()
         hybrid_docs = []
-        
+
         for doc in semantic_docs + keyword_docs:
             content_hash = hash(doc.page_content)
             if content_hash not in seen_content:
                 seen_content.add(content_hash)
                 hybrid_docs.append(doc)
-        
-        return hybrid_docs[:7]  # Return top 7 unique documents
+
+        # Apply reranking if available
+        if reranker:
+            return reranker.rerank(query, hybrid_docs, top_k=7)
+
+        # Otherwise just return top 7 unique documents
+        return hybrid_docs[:7]

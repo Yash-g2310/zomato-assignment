@@ -145,8 +145,9 @@ if __name__ == "__main__":
     
     # Scraper command
     scraper_parser = subparsers.add_parser("scrape", help="Run the scraper")
-    scraper_parser.add_argument("city", help="City to scrape (e.g., roorkee, ncr)")
+    
     scraper_parser.add_argument("--city", help="City to scrape (e.g., roorkee, ncr). If not provided, all default cities will be scraped.")
+    scraper_parser.add_argument("--force", action="store_true", help="Force re-scraping even if recent data exists")
     
     # Knowledge base command
     kb_parser = subparsers.add_parser("kb", help="Run knowledge base queries")

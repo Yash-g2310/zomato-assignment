@@ -5,6 +5,7 @@ import argparse
 from typing import List, Dict, Any
 import logging
 import re
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
